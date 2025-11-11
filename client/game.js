@@ -37,7 +37,7 @@ async function startGame() {
   document.getElementById("menu").style.display = "none";
   document.getElementById("game-container").style.display = "block";
 
-  ws = new WebSocket(`wss://${window.location.host}?token=${data.matchToken}`);
+const socket = new WebSocket("wss://credder-io-urk4.onrender.com");
   initPhaser();
 }
 
