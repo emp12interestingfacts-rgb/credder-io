@@ -1,6 +1,3 @@
-
-const serverUrl = window.location.origin.replace(/\/$/, "") + "/ws";
-
 let game;
 let ws;
 let player;
@@ -18,7 +15,8 @@ async function startGame() {
     return;
   }
 
-  const res = await fetch("/enter-match", {
+  // Use backend URL here
+  const res = await fetch("https://credder-io-urk4.onrender.com/enter-match", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -36,7 +34,21 @@ async function startGame() {
   document.getElementById("menu").style.display = "none";
   document.getElementById("game-container").style.display = "block";
 
-const socket = new WebSocket("wss://credder-io-urk4.onrender.com");
+  // Initialize WebSocket
+  ws = new WebSocket("wss://credder-io-urk4.onrender.com");
+
+  ws.onopen = () => console.log("✅ Connected to WebSocket server");
+  ws.onerror = (err) => console.error("❌ WebSocket error:", err);
+  ws.onclose = () => console.log("🔌 Disconnected from server");
+
+  ws.onmessage = (msg) => {
+    const data = JSON.parse(msg.data);
+    if (data.type === "cashout_success") {
+      alert("Cashout successful!");
+      location.reload();
+    }
+  };
+
   initPhaser();
 }
 
@@ -76,14 +88,6 @@ function create() {
     }, 100);
     this.input.keyboard.once("keyup-Q", () => clearInterval(interval));
   });
-
-  ws.onmessage = (msg) => {
-    const data = JSON.parse(msg.data);
-    if (data.type === "cashout_success") {
-      alert("Cashout successful!");
-      location.reload();
-    }
-  };
 }
 
 function update(time) {
