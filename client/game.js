@@ -1,4 +1,3 @@
-import Phaser from "phaser";
 
 const serverUrl = window.location.origin.replace(/\/$/, "") + "/ws";
 
