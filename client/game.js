@@ -1,20 +1,16 @@
-// client/game.js — updated
+// client/game.js
 const BACKEND_BASE = "https://credder-io-urk4.onrender.com"; // your backend
 let game;
 let ws;
 let player;
-let cursors;
-let stakeAmount;
 let phaserSceneRef = null;
+let stakeAmount;
 
-document.getElementById("play").addEventListener("click", startGame);
-
-// helper: ensure a real JWT exists in localStorage (prompt once)
+// Helper: ensure JWT exists
 function ensureJwt() {
   let token = localStorage.getItem("jwt");
   if (token && token.length > 10) return token;
 
-  // prompt the user to paste a real JWT (one-time; stored in localStorage)
   const pasted = window.prompt(
     "Paste your JWT (server-issued) here. This will be saved locally in your browser for future logins:",
     ""
@@ -26,16 +22,19 @@ function ensureJwt() {
   return null;
 }
 
+// Start Game
+document.getElementById("play").addEventListener("click", startGame);
+
 async function startGame() {
   stakeAmount = parseInt(document.getElementById("stake").value);
 
   const token = ensureJwt();
   if (!token) {
-    alert("No JWT provided. Paste a valid JWT when prompted.");
+    alert("No JWT provided.");
     return;
   }
 
-  // Call backend /enter-match with Authorization header (full URL)
+  // Call backend /enter-match
   let res;
   try {
     res = await fetch(`${BACKEND_BASE}/enter-match`, {
@@ -48,28 +47,21 @@ async function startGame() {
     });
   } catch (err) {
     console.error("Network error calling /enter-match:", err);
-    alert("Network error calling backend. Check console & Render logs.");
+    alert("Network error calling backend.");
     return;
   }
 
   const data = await res.json();
-  if (!res.ok) {
+  if (!res.ok || !data.matchToken) {
     console.error("enter-match error:", data);
-    alert("Enter-match failed: " + (data.error || JSON.stringify(data)));
+    alert("Enter-match failed or no matchToken returned.");
     return;
   }
 
-  if (!data.matchToken) {
-    console.error("enter-match returned no matchToken:", data);
-    alert("Server did not return matchToken. Check backend logs.");
-    return;
-  }
-
-  // Hide menu / show game
   document.getElementById("menu").style.display = "none";
   document.getElementById("game-container").style.display = "block";
 
-  // open WebSocket to backend with match token as query param (server expects ?token=...)
+  // Connect WebSocket
   const wsUrl = `wss://credder-io-urk4.onrender.com?token=${encodeURIComponent(
     data.matchToken
   )}`;
@@ -79,32 +71,18 @@ async function startGame() {
 
   ws.onopen = () => {
     console.log("✅ Connected to WebSocket server");
-    // optional: send a hello/join message if your server expects it
-    try {
-      ws.send(JSON.stringify({ type: "hello", ts: Date.now() }));
-    } catch (e) {}
+    ws.send(JSON.stringify({ type: "hello", ts: Date.now() }));
   };
-  ws.onerror = (err) => {
-    console.error("❌ WebSocket error:", err);
-  };
-  ws.onclose = (ev) => {
-    console.log("🔌 Disconnected from server", ev);
-  };
-
+  ws.onerror = (err) => console.error("❌ WebSocket error:", err);
+  ws.onclose = (ev) => console.log("🔌 Disconnected from server", ev);
   ws.onmessage = (msg) => {
-    // minimal incoming handling for now
     try {
       const payload = JSON.parse(msg.data);
-      // the server will eventually send snapshots; log them for debugging
-      // keep this light — avoid spamming console in production
-      // console.log("WS <-", payload);
-      if (payload.type === "snapshot") {
-        // you can update other players / pellets here later
-      }
       if (payload.type === "cashout_success") {
         alert("Cashout successful!");
         location.reload();
       }
+      // Add snapshot handling here later
     } catch (e) {
       console.warn("Invalid WS message", e);
     }
@@ -113,6 +91,7 @@ async function startGame() {
   initPhaser();
 }
 
+// Phaser initialization
 function initPhaser() {
   if (game) {
     console.warn("Phaser already running");
@@ -130,32 +109,45 @@ function initPhaser() {
   });
 }
 
+// Preload assets
 function preload() {
   this.load.image("dot", "https://i.imgur.com/0k7s6Cw.png");
 }
 
+// Create scene
 function create() {
   phaserSceneRef = this;
   player = this.physics.add.group();
+
+  // Snake setup
   this.snake = [this.add.image(400, 300, "dot")];
   this.head = this.snake[0];
   this.speed = 200;
+  this.boostSpeed = 400;
   this.length = 10;
-  this.lastMove = 0;
+  this.isBoosting = false;
 
-  cursors = this.input.keyboard.createCursorKeys();
+  // Mouse tracking
+  this.input.on("pointermove", (pointer) => {
+    this.pointer = pointer;
+  });
 
-  // Q hold -> cashout (4s)
+  // Click to boost
+  this.input.on("pointerdown", () => {
+    if (this.length > 0) {
+      this.isBoosting = true;
+      setTimeout(() => {
+        this.isBoosting = false;
+      }, 500); // boost duration 0.5s
+    }
+  });
+
+  // Q hold -> cashout
   this.input.keyboard.on("keydown-Q", () => {
     const startHold = Date.now();
     const interval = setInterval(() => {
       if (Date.now() - startHold >= 4000) {
-        if (ws && ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: "cashout" }));
-          console.log("Sent cashout request");
-        } else {
-          console.warn("WS not open — cannot cashout");
-        }
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "cashout" }));
         clearInterval(interval);
       }
     }, 100);
@@ -163,29 +155,29 @@ function create() {
   });
 }
 
+// Update loop
 function update(time) {
-  if (!player || !cursors) return;
-  if (!ws || ws.readyState !== 1) return; // wait for WS to be open
+  if (!phaserSceneRef || !phaserSceneRef.pointer || !phaserSceneRef.head) return;
+  if (!ws || ws.readyState !== 1) return;
 
-  const dir = { x: 0, y: 0 };
-  if (cursors.left.isDown) dir.x = -1;
-  if (cursors.right.isDown) dir.x = 1;
-  if (cursors.up.isDown) dir.y = -1;
-  if (cursors.down.isDown) dir.y = 1;
+  const scene = phaserSceneRef;
+  const dx = scene.pointer.x - scene.head.x;
+  const dy = scene.pointer.y - scene.head.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
 
-  // normalize diagonal speed
-  if (dir.x !== 0 && dir.y !== 0) {
-    const inv = 1 / Math.sqrt(2);
-    dir.x *= inv;
-    dir.y *= inv;
-  }
+  if (dist > 1) {
+    const dirX = dx / dist;
+    const dirY = dy / dist;
+    const speed = scene.isBoosting ? scene.boostSpeed : scene.speed;
 
-  // only send input when there is movement to reduce traffic
-  if (dir.x !== 0 || dir.y !== 0) {
-    try {
-      ws.send(JSON.stringify({ type: "input", dir }));
-    } catch (e) {
-      console.warn("Failed to send input:", e);
-    }
+    scene.head.x += dirX * speed * (scene.game.loop.delta / 1000);
+    scene.head.y += dirY * speed * (scene.game.loop.delta / 1000);
+
+    // Send WS input
+    ws.send(JSON.stringify({
+      type: "input",
+      dir: { x: dirX, y: dirY },
+      boost: !!scene.isBoosting
+    }));
   }
 }
