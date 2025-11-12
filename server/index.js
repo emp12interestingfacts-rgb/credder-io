@@ -1,103 +1,55 @@
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import { WebSocketServer } from "ws";
-import jwt from "jsonwebtoken";
-import { createClient } from "@supabase/supabase-js";
-import { handleGameConnection } from "./gameServer.js";
+const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
+const cors = require("cors");
+const bodyParser = require("body-parser");
 
-dotenv.config();
-
+// ====== EXPRESS SETUP ======
 const app = express();
-app.use(cors());
-app.use(express.json());
+app.use(cors()); // allow all origins for testing
+app.use(bodyParser.json());
 
-// Supabase client
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-
-// Middleware to check JWT
-const verifyJWT = (req, res, next) => {
-  const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ error: "No auth header" });
-  try {
-    const token = auth.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded.sub;
-    next();
-  } catch {
-    return res.status(401).json({ error: "Invalid token" });
-  }
-};
-
-// --- ROUTES ---
-
-// 🧍 Account endpoint
-app.get("/account", verifyJWT, async (req, res) => {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("credits")
-    .eq("id", req.user)
-    .single();
-
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ credits: data.credits });
-});
-
-// 🏁 Enter match
-app.post("/enter-match", verifyJWT, async (req, res) => {
+// Example /enter-match route
+app.post("/enter-match", (req, res) => {
   const { stake } = req.body;
-  const allowed = [100, 500, 1000];
-  if (!allowed.includes(stake))
-    return res.status(400).json({ error: "Invalid stake" });
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: "No JWT provided" });
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("credits")
-    .eq("id", req.user)
-    .single();
-
-  if (!profile || profile.credits < stake)
-    return res.status(400).json({ error: "Insufficient credits" });
-
-  await supabase
-    .from("profiles")
-    .update({ credits: profile.credits - stake })
-    .eq("id", req.user);
-
-  const matchToken = jwt.sign(
-    { sub: req.user, stake },
-    process.env.JWT_SECRET,
-    { expiresIn: "2h" }
-  );
-
-  res.json({ matchToken, stake });
+  // In production, verify JWT here using your JWT_SECRET
+  const matchToken = Math.random().toString(36).substr(2, 12); // dummy token
+  return res.json({ matchToken });
 });
 
-// 💰 Cashout
-app.post("/cashout", verifyJWT, async (req, res) => {
-  const { amount } = req.body;
-  if (amount <= 0) return res.status(400).json({ error: "Invalid amount" });
+// ====== HTTP SERVER ======
+const PORT = process.env.PORT || 3000;
+const server = http.createServer(app);
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("credits")
-    .eq("id", req.user)
-    .single();
+// ====== WEBSOCKET SERVER ======
+const wss = new WebSocket.Server({ server });
 
-  const newCredits = (profile?.credits || 0) + amount;
+wss.on("connection", (socket, req) => {
+  console.log("✅ New WS connection from", req.socket.remoteAddress);
 
-  await supabase
-    .from("profiles")
-    .update({ credits: newCredits })
-    .eq("id", req.user);
+  socket.on("message", (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.type === "hello") {
+        socket.send(JSON.stringify({ type: "hello_ack" }));
+      }
+      if (data.type === "input") {
+        // TODO: handle snake movement
+        // console.log("input:", data.dir);
+      }
+      if (data.type === "cashout") {
+        socket.send(JSON.stringify({ type: "cashout_success" }));
+      }
+    } catch (e) {
+      console.warn("Invalid WS message", e);
+    }
+  });
 
-  res.json({ success: true, newCredits });
+  socket.on("close", () => console.log("🔌 WS disconnected"));
 });
 
-const server = app.listen(process.env.PORT || 3000, () => {
-  console.log(`HTTP server running on port ${process.env.PORT}`);
-});
-
-// 🎮 WebSocket
-const wss = new WebSocketServer({ server });
-wss.on("connection", (ws, req) => handleGameConnection(ws, req, supabase));
+// ====== START SERVER ======
+server.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
