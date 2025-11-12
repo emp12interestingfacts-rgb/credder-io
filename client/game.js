@@ -1,152 +1,214 @@
-import Phaser from "https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js";
+// ---------------- Supabase Setup ----------------
+const SUPABASE_URL = "https://ignzvfcfgwowuqebzffq.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlnbnp2ZmNmZ3dvd3VxZWJ6ZmZxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2Mjg0NTc0OSwiZXhwIjoyMDc4NDIxNzQ5fQ.sRYzTrlBKgtlwtlRdB-hkQ4ruN9BPDzcY0QFNDba7Rs";
+const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const serverUrl = "wss://credder-io-urk4.onrender.com";
+let game, ws, player, stakeAmount;
+let players = {}; // snapshot from WS
+let pellets = [];
+const SEGMENT_SIZE = 15;
 
-let game;
-let ws;
-let player;
-let stakeAmount;
+// DOM Elements
+const loginContainer = document.getElementById("login-container");
+const loginBtn = document.getElementById("login-btn");
+const loginError = document.getElementById("login-error");
+const menu = document.getElementById("menu");
+const playBtn = document.getElementById("play");
+const leaderboardDiv = document.getElementById("leaderboard");
+const minimapDiv = document.getElementById("minimap");
 
-document.getElementById("play").addEventListener("click", startGame);
+// ---------------- LOGIN ----------------
+loginBtn.addEventListener("click", async () => {
+  const email = document.getElementById("email").value;
+  const password = document.getElementById("password").value;
+
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) {
+    loginError.innerText = error.message;
+    return;
+  }
+
+  localStorage.setItem("jwt", data.session.access_token);
+  loginContainer.style.display = "none";
+  menu.style.display = "block";
+  playBtn.disabled = false;
+});
+
+// ---------------- START GAME ----------------
+playBtn.addEventListener("click", startGame);
 
 async function startGame() {
   stakeAmount = parseInt(document.getElementById("stake").value);
   const token = localStorage.getItem("jwt");
-  if (!token) return alert("You must log in first.");
+  if (!token) {
+    alert("You must log in first!");
+    return;
+  }
 
   const res = await fetch("/enter-match", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify({ stake: stakeAmount }),
   });
-  const data = await res.json();
-  if (data.error) return alert(data.error);
 
-  document.getElementById("menu").style.display = "none";
+  const data = await res.json();
+  if (data.error) {
+    alert(data.error);
+    return;
+  }
+
+  menu.style.display = "none";
   document.getElementById("game-container").style.display = "block";
 
-  ws = new WebSocket(`${serverUrl}?token=${token}`);
+  ws = new WebSocket(`wss://credder-io-urk4.onrender.com?token=${token}`);
   ws.onopen = () => console.log("✅ Connected to WebSocket server");
+
+  ws.onmessage = (msg) => {
+    const snap = JSON.parse(msg.data);
+    if (snap.type === "snapshot") {
+      players = {};
+      snap.players.forEach(p => players[p.id] = p);
+      pellets = snap.pellets || [];
+    }
+    if (snap.type === "cashout_success") {
+      alert("Cashout successful!");
+      location.reload();
+    }
+  };
 
   initPhaser();
 }
 
-let snakes = {};
-let pellets = [];
-
+// ---------------- PHASER GAME ----------------
 function initPhaser() {
   game = new Phaser.Game({
     type: Phaser.AUTO,
     width: window.innerWidth,
     height: window.innerHeight,
     parent: "game-container",
-    backgroundColor: "#000000",
+    backgroundColor: "#000",
     physics: { default: "arcade" },
     scene: { preload, create, update },
   });
 }
 
 function preload() {
-  this.load.image("segment", "https://i.imgur.com/0k7s6Cw.png"); // placeholder
-  this.load.image("pellet", "https://i.imgur.com/Qo9e3ps.png");
+  this.load.image("dot", "https://i.imgur.com/0k7s6Cw.png"); // segment placeholder
+  this.load.image("pellet", "https://i.imgur.com/3XvPNqC.png"); // pellet placeholder
 }
 
 function create() {
-  const scene = this;
+  const self = this;
 
-  this.input.on("pointerdown", () => { if (player) player.boost = true; });
-  this.input.on("pointerup", () => { if (player) player.boost = false; });
+  this.snakeGraphics = this.add.graphics();
+  this.pelletGraphics = this.add.graphics();
 
-  this.input.on("pointermove", (pointer) => {
-    if (!player) return;
-    const dx = pointer.worldX - player.x;
-    const dy = pointer.worldY - player.y;
-    const len = Math.sqrt(dx * dx + dy * dy) || 1;
-    player.dir = { x: dx / len, y: dy / len };
+  this.input.on("pointerdown", () => {
+    if (player) player.boost = true;
+  });
+  this.input.on("pointerup", () => {
+    if (player) player.boost = false;
   });
 
-  ws.onmessage = (msg) => {
-    const data = JSON.parse(msg.data);
-    snakes = {};
-    data.players.forEach((p) => {
-      snakes[p.id] = p;
-      if (!player || player.id === p.id) player = p;
-    });
-    pellets = data.pellets;
-  };
-
-  // Leaderboard container
-  this.leaderboard = this.add.text(window.innerWidth - 200, 50, '', { fontSize: '16px', fill: '#ffffff' });
+  // Cashout with Q
+  this.input.keyboard.on("keydown-Q", () => {
+    const startHold = Date.now();
+    const interval = setInterval(() => {
+      if (Date.now() - startHold >= 4000) {
+        ws.send(JSON.stringify({ type: "cashout" }));
+        clearInterval(interval);
+      }
+    }, 100);
+    this.input.keyboard.once("keyup-Q", () => clearInterval(interval));
+  });
 }
 
 function update() {
-  const scene = game.scene.scenes[0];
-  scene.children.removeAll();
+  if (!players) return;
 
-  // --- Draw pellets ---
-  pellets.forEach(p => scene.add.image(p.x, p.y, "pellet").setScale(0.5));
+  const graphics = game.scene.scenes[0].snakeGraphics;
+  const pelletGraphics = game.scene.scenes[0].pelletGraphics;
+  graphics.clear();
+  pelletGraphics.clear();
+  leaderboardDiv.innerHTML = "<b>Leaderboard</b><br>";
 
-  // --- Draw snakes ---
-  Object.values(snakes).forEach(s => {
-    if (!s.segments) s.segments = Array.from({ length: s.length }, () => ({ x: s.x, y: s.y }));
+  const mouseX = game.input.activePointer.worldX;
+  const mouseY = game.input.activePointer.worldY;
 
-    // Move head toward direction always
-    const speed = s.boost ? 5 : 3; // adjust for scale
-    const head = s.segments[0];
-    head.x += (s.dir?.x || 0) * speed;
-    head.y += (s.dir?.y || 0) * speed;
+  // Draw pellets
+  pellets.forEach(pellet => {
+    pelletGraphics.fillStyle(0xffff00, 1);
+    pelletGraphics.fillCircle(pellet.x, pellet.y, 6);
 
-    // Body follows head
-    for (let i = 1; i < s.segments.length; i++) {
-      const seg = s.segments[i];
-      const prev = s.segments[i - 1];
-      seg.x += (prev.x - seg.x) * 0.5;
-      seg.y += (prev.y - seg.y) * 0.5;
+    // Collision with player
+    if (player) {
+      const dx = pellet.x - player.segments[0].x;
+      const dy = pellet.y - player.segments[0].y;
+      if (Math.sqrt(dx*dx + dy*dy) < SEGMENT_SIZE) {
+        player.length += 1;
+        // remove from server snapshot
+        const idx = pellets.indexOf(pellet);
+        if (idx !== -1) pellets.splice(idx, 1);
+      }
+    }
+  });
+
+  Object.values(players).forEach((p) => {
+    leaderboardDiv.innerHTML += `Player ${p.id.substring(0,4)}: ${p.length}<br>`;
+
+    if (!p.segments) {
+      p.segments = [];
+      for (let i = 0; i < p.length; i++) {
+        p.segments.push({ x: p.x, y: p.y });
+      }
     }
 
-    // Render segments
-    s.segments.forEach((seg, idx) => {
-      const tint = Phaser.Display.Color.Interpolate.ColorWithColor(
-        Phaser.Display.Color.IntegerToColor(s.color),
-        Phaser.Display.Color.IntegerToColor(0xffffff),
-        s.segments.length,
-        idx
-      );
-      scene.add.image(seg.x, seg.y, "segment")
-        .setTint(Phaser.Display.Color.GetColor(tint.r, tint.g, tint.b))
-        .setScale(1);
+    // Only move local player
+    if (!player) player = p;
+    if (p.id === player.id) {
+      const dx = mouseX - player.segments[0].x;
+      const dy = mouseY - player.segments[0].y;
+      const len = Math.sqrt(dx*dx + dy*dy) || 1;
+      const speed = player.boost ? 8 : 4;
+      player.segments[0].x += (dx/len)*speed;
+      player.segments[0].y += (dy/len)*speed;
+
+      ws.send(JSON.stringify({ type:"input", dir:{x:dx/len, y:dy/len}, boost:player.boost }));
+    }
+
+    // Move segments
+    for (let i = 1; i < p.segments.length; i++) {
+      const prev = p.segments[i-1];
+      const seg = p.segments[i];
+      const dx = prev.x - seg.x;
+      const dy = prev.y - seg.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      const followSpeed = dist > SEGMENT_SIZE ? dist*0.3 : 0;
+      seg.x += dx/dist * followSpeed;
+      seg.y += dy/dist * followSpeed;
+    }
+
+    // Draw snake
+    p.segments.forEach((seg, i) => {
+      graphics.fillStyle(p.color, 1);
+      graphics.fillCircle(seg.x, seg.y, SEGMENT_SIZE - i*0.5);
     });
   });
 
-  // --- Send player input ---
-  if (player && ws.readyState === 1) {
-    ws.send(JSON.stringify({
-      type: "input",
-      dir: player.dir || { x: 0, y: 0 },
-      boost: player.boost || false
-    }));
+  // Minimap
+  const ctx = minimapDiv.getContext?.("2d");
+  if (ctx) {
+    ctx.clearRect(0,0,150,150);
+    // pellets
+    ctx.fillStyle = "#ff0";
+    pellets.forEach(p => ctx.fillRect((p.x+2500)/5000*150, (p.y+2500)/5000*150, 2,2));
+    // snakes
+    ctx.fillStyle = "#fff";
+    Object.values(players).forEach(p => {
+      p.segments.forEach(seg => ctx.fillRect((seg.x+2500)/5000*150, (seg.y+2500)/5000*150, 2,2));
+    });
   }
-
-  // --- Mini-map ---
-  const miniMapX = 20, miniMapY = 20, miniMapSize = 200;
-  const worldSize = 5000;
-  scene.add.rectangle(miniMapX + miniMapSize/2, miniMapY + miniMapSize/2, miniMapSize, miniMapSize).setStrokeStyle(2, 0xffffff);
-  // draw players on mini-map
-  Object.values(snakes).forEach(s => {
-    const x = miniMapX + (s.x + worldSize/2) / worldSize * miniMapSize;
-    const y = miniMapY + (s.y + worldSize/2) / worldSize * miniMapSize;
-    scene.add.rectangle(x, y, 4, 4, s.color);
-  });
-  // draw pellets on mini-map
-  pellets.forEach(p => {
-    const x = miniMapX + (p.x + worldSize/2) / worldSize * miniMapSize;
-    const y = miniMapY + (p.y + worldSize/2) / worldSize * miniMapSize;
-    scene.add.rectangle(x, y, 2, 2, 0xffff00);
-  });
-
-  // --- Leaderboard ---
-  const topPlayers = Object.values(snakes).sort((a,b)=>b.length-a.length).slice(0,5);
-  let lbText = 'Leaderboard\n';
-  topPlayers.forEach((p,i) => lbText += `${i+1}. ${p.id.slice(0,5)}: ${p.length}\n`);
-  scene.leaderboard.setText(lbText);
 }
