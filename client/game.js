@@ -2,17 +2,16 @@
 const BACKEND_BASE = "https://credder-io-urk4.onrender.com"; // your backend
 let game;
 let ws;
-let player;
-let phaserSceneRef = null;
+let phaserScene = null;
 let stakeAmount;
 
-// Helper: ensure JWT exists
+// Ensure JWT exists
 function ensureJwt() {
   let token = localStorage.getItem("jwt");
   if (token && token.length > 10) return token;
 
   const pasted = window.prompt(
-    "Paste your JWT (server-issued) here. This will be saved locally in your browser for future logins:",
+    "Paste your JWT (server-issued) here. This will be saved locally for future logins:",
     ""
   );
   if (pasted && pasted.length > 10) {
@@ -27,7 +26,6 @@ document.getElementById("play").addEventListener("click", startGame);
 
 async function startGame() {
   stakeAmount = parseInt(document.getElementById("stake").value);
-
   const token = ensureJwt();
   if (!token) {
     alert("No JWT provided.");
@@ -46,7 +44,7 @@ async function startGame() {
       body: JSON.stringify({ stake: stakeAmount }),
     });
   } catch (err) {
-    console.error("Network error calling /enter-match:", err);
+    console.error("Network error:", err);
     alert("Network error calling backend.");
     return;
   }
@@ -68,13 +66,9 @@ async function startGame() {
   console.log("Connecting to WS:", wsUrl);
 
   ws = new WebSocket(wsUrl);
-
-  ws.onopen = () => {
-    console.log("✅ Connected to WebSocket server");
-    ws.send(JSON.stringify({ type: "hello", ts: Date.now() }));
-  };
+  ws.onopen = () => console.log("✅ Connected to WebSocket server");
   ws.onerror = (err) => console.error("❌ WebSocket error:", err);
-  ws.onclose = (ev) => console.log("🔌 Disconnected from server", ev);
+  ws.onclose = () => console.log("🔌 Disconnected from server");
   ws.onmessage = (msg) => {
     try {
       const payload = JSON.parse(msg.data);
@@ -82,7 +76,7 @@ async function startGame() {
         alert("Cashout successful!");
         location.reload();
       }
-      // Add snapshot handling here later
+      // Here you can add updates from other players
     } catch (e) {
       console.warn("Invalid WS message", e);
     }
@@ -91,12 +85,9 @@ async function startGame() {
   initPhaser();
 }
 
-// Phaser initialization
+// Phaser setup
 function initPhaser() {
-  if (game) {
-    console.warn("Phaser already running");
-    return;
-  }
+  if (game) return;
 
   game = new Phaser.Game({
     type: Phaser.AUTO,
@@ -109,23 +100,27 @@ function initPhaser() {
   });
 }
 
-// Preload assets
 function preload() {
-  this.load.image("dot", "https://i.imgur.com/0k7s6Cw.png");
+  // we can use simple circles, no images needed
 }
 
-// Create scene
 function create() {
-  phaserSceneRef = this;
-  player = this.physics.add.group();
+  phaserScene = this;
 
   // Snake setup
-  this.snake = [this.add.image(400, 300, "dot")];
-  this.head = this.snake[0];
+  this.snake = [];
+  this.head = this.add.circle(400, 300, 10, 0x00ff00);
+  this.snake.push(this.head);
+  this.segmentSpacing = 12;
   this.speed = 200;
   this.boostSpeed = 400;
-  this.length = 10;
   this.isBoosting = false;
+
+  // Initial length
+  for (let i = 1; i < 10; i++) {
+    const seg = this.add.circle(400 - i * this.segmentSpacing, 300, 10, 0x00ff00);
+    this.snake.push(seg);
+  }
 
   // Mouse tracking
   this.input.on("pointermove", (pointer) => {
@@ -134,15 +129,14 @@ function create() {
 
   // Click to boost
   this.input.on("pointerdown", () => {
-    if (this.length > 0) {
+    if (this.snake.length > 1) {
       this.isBoosting = true;
-      setTimeout(() => {
-        this.isBoosting = false;
-      }, 500); // boost duration 0.5s
+      setTimeout(() => (this.isBoosting = false), 500);
+      shrinkSnake(this, 1); // lose 1 segment on boost
     }
   });
 
-  // Q hold -> cashout
+  // Q hold for cashout
   this.input.keyboard.on("keydown-Q", () => {
     const startHold = Date.now();
     const interval = setInterval(() => {
@@ -155,14 +149,15 @@ function create() {
   });
 }
 
-// Update loop
-function update(time) {
-  if (!phaserSceneRef || !phaserSceneRef.pointer || !phaserSceneRef.head) return;
+function update() {
+  if (!phaserScene || !phaserScene.pointer) return;
   if (!ws || ws.readyState !== 1) return;
 
-  const scene = phaserSceneRef;
-  const dx = scene.pointer.x - scene.head.x;
-  const dy = scene.pointer.y - scene.head.y;
+  const scene = phaserScene;
+  const head = scene.snake[0];
+
+  const dx = scene.pointer.x - head.x;
+  const dy = scene.pointer.y - head.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
 
   if (dist > 1) {
@@ -170,14 +165,49 @@ function update(time) {
     const dirY = dy / dist;
     const speed = scene.isBoosting ? scene.boostSpeed : scene.speed;
 
-    scene.head.x += dirX * speed * (scene.game.loop.delta / 1000);
-    scene.head.y += dirY * speed * (scene.game.loop.delta / 1000);
+    // Move head
+    head.x += dirX * speed * (scene.game.loop.delta / 1000);
+    head.y += dirY * speed * (scene.game.loop.delta / 1000);
 
-    // Send WS input
-    ws.send(JSON.stringify({
-      type: "input",
-      dir: { x: dirX, y: dirY },
-      boost: !!scene.isBoosting
-    }));
+    // Move segments
+    for (let i = 1; i < scene.snake.length; i++) {
+      const seg = scene.snake[i];
+      const prev = scene.snake[i - 1];
+      const vx = prev.x - seg.x;
+      const vy = prev.y - seg.y;
+      const distance = Math.sqrt(vx * vx + vy * vy);
+      if (distance > scene.segmentSpacing) {
+        seg.x += vx * 0.2;
+        seg.y += vy * 0.2;
+      }
+    }
+
+    // Send input to server
+    ws.send(
+      JSON.stringify({
+        type: "input",
+        dir: { x: dirX, y: dirY },
+        boost: !!scene.isBoosting,
+      })
+    );
+  }
+}
+
+// Grow snake function
+function growSnake(scene, segments = 1) {
+  for (let i = 0; i < segments; i++) {
+    const tail = scene.snake[scene.snake.length - 1];
+    const seg = scene.add.circle(tail.x, tail.y, 10, 0x00ff00);
+    scene.snake.push(seg);
+  }
+}
+
+// Shrink snake on boost
+function shrinkSnake(scene, segments = 1) {
+  for (let i = 0; i < segments; i++) {
+    if (scene.snake.length > 1) {
+      const seg = scene.snake.pop();
+      seg.destroy();
+    }
   }
 }
