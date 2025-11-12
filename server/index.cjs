@@ -6,7 +6,7 @@ const bodyParser = require("body-parser");
 
 // ====== EXPRESS SETUP ======
 const app = express();
-app.use(cors()); // allow all origins for testing
+app.use(cors());
 app.use(bodyParser.json());
 
 // Example /enter-match route
@@ -15,7 +15,7 @@ app.post("/enter-match", (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: "No JWT provided" });
 
-  // In production, verify JWT here using your JWT_SECRET
+  // In production, verify JWT here
   const matchToken = Math.random().toString(36).substr(2, 12); // dummy token
   return res.json({ matchToken });
 });
@@ -33,15 +33,11 @@ wss.on("connection", (socket, req) => {
   socket.on("message", (msg) => {
     try {
       const data = JSON.parse(msg);
-      if (data.type === "hello") {
-        socket.send(JSON.stringify({ type: "hello_ack" }));
-      }
+      if (data.type === "hello") socket.send(JSON.stringify({ type: "hello_ack" }));
+      if (data.type === "cashout") socket.send(JSON.stringify({ type: "cashout_success" }));
       if (data.type === "input") {
         // TODO: handle snake movement
         // console.log("input:", data.dir);
-      }
-      if (data.type === "cashout") {
-        socket.send(JSON.stringify({ type: "cashout_success" }));
       }
     } catch (e) {
       console.warn("Invalid WS message", e);
