@@ -5,19 +5,25 @@ const { WebSocketServer } = require("ws");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 
+// Pull from environment variables
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error("Supabase URL or KEY missing!");
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-const supabase = createClient(
-  "https://ignzvfcfgwowuqebzffq.supabase.co",
-  process.env.SUPABASE_SERVICE_KEY // server-side key
-);
 
 const players = {};
 const pellets = [];
 const WORLD_SIZE = 5000;
 
+// Spawn initial pellets
 function spawnPellet(x, y, credits = 10) {
   pellets.push({ id: "p_" + Math.random(), x, y, credits });
 }
@@ -25,6 +31,7 @@ for (let i = 0; i < 100; i++) {
   spawnPellet(Math.random() * WORLD_SIZE - WORLD_SIZE / 2, Math.random() * WORLD_SIZE - WORLD_SIZE / 2);
 }
 
+// JWT verification
 async function verifyUser(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: "No token" });
@@ -37,6 +44,7 @@ async function verifyUser(req, res, next) {
   next();
 }
 
+// Enter match
 app.post("/enter-match", verifyUser, async (req, res) => {
   const { stake } = req.body;
   if (![100, 500, 1000].includes(stake)) return res.status(400).json({ error: "Invalid stake" });
@@ -45,6 +53,7 @@ app.post("/enter-match", verifyUser, async (req, res) => {
   res.json({ matchToken });
 });
 
+// HTTP server + WebSocket
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -53,7 +62,7 @@ wss.on("connection", async (ws, req) => {
   const token = url.searchParams.get("token");
   if (!token) return ws.close();
 
-  const { data: { user }, error } = await supabase.auth.getUser(token);
+  const { data: { user } } = await supabase.auth.getUser(token);
   if (!user) return ws.close();
 
   const id = user.id;
@@ -85,6 +94,7 @@ wss.on("connection", async (ws, req) => {
   });
 });
 
+// Game loop
 setInterval(() => {
   const snapshot = {
     type: "snapshot",
